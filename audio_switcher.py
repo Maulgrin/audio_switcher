@@ -77,24 +77,21 @@ def get_output_devices():
 
     devices = []
 
-    enumerator = AudioUtilities.GetDeviceEnumerator()
-    collection = enumerator.EnumAudioEndpoints(
-        EDataFlow.eRender.value,
-        DEVICE_STATE.ACTIVE.value,
-    )
+    raw_devices = AudioUtilities.GetAllDevices()
 
-    count = collection.GetCount()
+    for device in raw_devices:
+        # Only active playback/render devices
+        if not device.state == DEVICE_STATE.ACTIVE.value:
+            continue
 
-    for i in range(count):
-        device = collection.Item(i)
-
-        device_id = device.GetId()
-        friendly_name = device.GetFriendlyName()
+        # pycaw uses DataFlow 0 for render/playback devices
+        if device.data_flow != EDataFlow.eRender.value:
+            continue
 
         devices.append(
             {
-                "name": friendly_name,
-                "id": device_id,
+                "name": device.FriendlyName,
+                "id": device.id,
             }
         )
 
