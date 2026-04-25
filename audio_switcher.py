@@ -6,8 +6,17 @@ from tkinter import messagebox
 import comtypes
 from comtypes import GUID, HRESULT, COMMETHOD
 from comtypes import CoCreateInstance, CLSCTX_ALL
-from ctypes import POINTER, Structure, c_ulong, c_int
-from ctypes.wintypes import DWORD, LPCWSTR, BOOL
+
+from ctypes import (
+    POINTER,
+    Structure,
+    Union,
+    c_ulong,
+    c_ushort,
+    c_int,
+    c_void_p,
+)
+from ctypes.wintypes import DWORD, LPCWSTR, LPWSTR, BOOL
 
 
 # ------------------------------------------------------------
@@ -16,13 +25,18 @@ from ctypes.wintypes import DWORD, LPCWSTR, BOOL
 
 DEVICE_STATE_ACTIVE = 0x00000001
 
-eRender = 0
+# Audio data flow
+eRender = 0  # Playback/output devices
 
+# Windows audio roles
 ERole_Console = 0
 ERole_Multimedia = 1
 ERole_Communications = 2
 
 STGM_READ = 0x00000000
+
+# PROPVARIANT type for string values
+VT_LPWSTR = 31
 
 
 # ------------------------------------------------------------
@@ -36,13 +50,22 @@ class PROPERTYKEY(Structure):
     ]
 
 
-class PROPVARIANT(Structure):
+class PROPVARIANT_UNION(Union):
     _fields_ = [
-        ("vt", c_ulong),
-        ("wReserved1", c_ulong),
-        ("wReserved2", c_ulong),
-        ("wReserved3", c_ulong),
-        ("pwszVal", LPCWSTR),
+        ("pwszVal", LPWSTR),
+        ("pointerValue", c_void_p),
+    ]
+
+
+class PROPVARIANT(Structure):
+    _anonymous_ = ("u",)
+
+    _fields_ = [
+        ("vt", c_ushort),
+        ("wReserved1", c_ushort),
+        ("wReserved2", c_ushort),
+        ("wReserved3", c_ushort),
+        ("u", PROPVARIANT_UNION),
     ]
 
 
@@ -61,8 +84,19 @@ class IPropertyStore(comtypes.IUnknown):
     _iid_ = GUID("{886d8eeb-8cf2-4446-8d02-cdba1dbdcf99}")
 
     _methods_ = [
-        COMMETHOD([], HRESULT, "GetCount"),
-        COMMETHOD([], HRESULT, "GetAt"),
+        COMMETHOD(
+            [],
+            HRESULT,
+            "GetCount",
+            (["out"], POINTER(DWORD), "cProps"),
+        ),
+        COMMETHOD(
+            [],
+            HRESULT,
+            "GetAt",
+            (["in"], DWORD, "iProp"),
+            (["out"], POINTER(PROPERTYKEY), "pkey"),
+        ),
         COMMETHOD(
             [],
             HRESULT,
@@ -93,7 +127,12 @@ class IMMDevice(comtypes.IUnknown):
             "GetId",
             (["out"], POINTER(LPCWSTR), "ppstrId"),
         ),
-        COMMETHOD([], HRESULT, "GetState"),
+        COMMETHOD(
+            [],
+            HRESULT,
+            "GetState",
+            (["out"], POINTER(DWORD), "pdwState"),
+        ),
     ]
 
 
@@ -137,6 +176,10 @@ class IMMDeviceEnumerator(comtypes.IUnknown):
 
 
 class IPolicyConfig(comtypes.IUnknown):
+    """
+    Undocumented Windows interface used to change the default audio endpoint.
+    """
+
     _iid_ = GUID("{f8679f50-850a-41cf-9c72-430f290290c8}")
 
     _methods_ = [
@@ -168,23 +211,21 @@ class IPolicyConfig(comtypes.IUnknown):
 
 
 # ------------------------------------------------------------
-# Audio logic
+# Audio device logic
 # ------------------------------------------------------------
 
 def get_device_name(device):
-    store = POINTER(IPropertyStore)()
-    device.OpenPropertyStore(STGM_READ, store)
+    store = device.OpenPropertyStore(STGM_READ)
+    prop = store.GetValue(PKEY_Device_FriendlyName)
 
-    prop = PROPVARIANT()
-    store.GetValue(PKEY_Device_FriendlyName, prop)
+    if prop.vt == VT_LPWSTR and prop.pwszVal:
+        return str(prop.pwszVal)
 
-    return prop.pwszVal or "Unknown Audio Device"
+    return "Unknown Audio Device"
 
 
 def get_device_id(device):
-    device_id = LPCWSTR()
-    device.GetId(device_id)
-    return device_id.value
+    return device.GetId()
 
 
 def get_output_devices():
@@ -196,21 +237,17 @@ def get_output_devices():
         CLSCTX_ALL,
     )
 
-    collection = POINTER(IMMDeviceCollection)()
-    enumerator.EnumAudioEndpoints(
+    collection = enumerator.EnumAudioEndpoints(
         eRender,
         DEVICE_STATE_ACTIVE,
-        collection,
     )
 
-    count = c_ulong()
-    collection.GetCount(count)
+    count = collection.GetCount()
 
-    for index in range(count.value):
-        device = POINTER(IMMDevice)()
-        collection.Item(index, device)
-
+    for index in range(count):
         try:
+            device = collection.Item(index)
+
             name = get_device_name(device)
             device_id = get_device_id(device)
 
@@ -247,15 +284,15 @@ class AudioSwitcherApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Audio Output Switcher")
-        self.root.geometry("550x400")
+        self.root.geometry("575x425")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
-        title = tk.Label(
+        self.title_label = tk.Label(
             root,
             text="Windows Audio Output Switcher",
             font=("Segoe UI", 16, "bold"),
         )
-        title.pack(pady=12)
+        self.title_label.pack(pady=12)
 
         self.device_frame = tk.Frame(root)
         self.device_frame.pack(fill="both", expand=True, padx=15)
@@ -280,11 +317,15 @@ class AudioSwitcherApp:
 
     def close(self):
         try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+        try:
             comtypes.CoUninitialize()
         except Exception:
             pass
 
-        self.root.destroy()
         sys.exit(0)
 
     def clear_devices(self):
@@ -313,7 +354,7 @@ class AudioSwitcherApp:
                 self.device_frame,
                 text=device["name"],
                 height=2,
-                wraplength=500,
+                wraplength=520,
                 command=lambda d=device: self.switch_device(d),
             )
             button.pack(fill="x", pady=5)
@@ -335,6 +376,10 @@ class AudioSwitcherApp:
             )
 
 
+# ------------------------------------------------------------
+# Main
+# ------------------------------------------------------------
+
 def main():
     comtypes.CoInitialize()
 
@@ -346,7 +391,7 @@ def main():
 
     signal.signal(signal.SIGINT, handle_ctrl_c)
 
-    # Allows Ctrl+C to be processed while Tkinter is open.
+    # Lets Tkinter notice Ctrl+C from the terminal.
     def poll_for_signals():
         root.after(100, poll_for_signals)
 
