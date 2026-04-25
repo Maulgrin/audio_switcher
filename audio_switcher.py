@@ -9,6 +9,7 @@ from ctypes.wintypes import LPCWSTR, BOOL
 
 from pycaw.pycaw import AudioUtilities, EDataFlow, DEVICE_STATE
 
+comtypes.CoInitialize()
 
 # Windows audio role values
 ERole_Console = 0
