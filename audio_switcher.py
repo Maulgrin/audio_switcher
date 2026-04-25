@@ -1,13 +1,21 @@
 import tkinter as tk
 from tkinter import messagebox
+import warnings
 
 import comtypes
 from comtypes import GUID, HRESULT, COMMETHOD
 from comtypes import CoCreateInstance, CLSCTX_ALL
-from ctypes import POINTER, c_int
+from ctypes import c_int
 from ctypes.wintypes import LPCWSTR, BOOL
 
 from pycaw.pycaw import AudioUtilities, EDataFlow, DEVICE_STATE
+
+warnings.filterwarnings(
+    "ignore",
+    message="COMError attempting to get property.*",
+    category=UserWarning,
+    module="pycaw.utils",
+)
 
 comtypes.CoInitialize()
 
