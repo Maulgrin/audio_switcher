@@ -168,7 +168,14 @@ class IMMDeviceEnumerator(comtypes.IUnknown):
             (["in"], DWORD, "dwStateMask"),
             (["out"], POINTER(POINTER(IMMDeviceCollection)), "ppDevices"),
         ),
-        COMMETHOD([], HRESULT, "GetDefaultAudioEndpoint"),
+        COMMETHOD(
+            [],
+            HRESULT,
+            "GetDefaultAudioEndpoint",
+            (["in"], c_int, "dataFlow"),
+            (["in"], c_int, "role"),
+            (["out"], POINTER(POINTER(IMMDevice)), "ppEndpoint"),
+        ),
         COMMETHOD([], HRESULT, "GetDevice"),
         COMMETHOD([], HRESULT, "RegisterEndpointNotificationCallback"),
         COMMETHOD([], HRESULT, "UnregisterEndpointNotificationCallback"),
@@ -228,14 +235,18 @@ def get_device_id(device):
     return device.GetId()
 
 
-def get_output_devices():
-    devices = []
-
-    enumerator = CoCreateInstance(
+def create_device_enumerator():
+    return CoCreateInstance(
         GUID("{bcde0395-e52f-467c-8e3d-c4579291692e}"),
         IMMDeviceEnumerator,
         CLSCTX_ALL,
     )
+
+
+def get_output_devices():
+    devices = []
+
+    enumerator = create_device_enumerator()
 
     collection = enumerator.EnumAudioEndpoints(
         eRender,
@@ -262,6 +273,17 @@ def get_output_devices():
             print(f"Skipped audio device {index}: {error}")
 
     return devices
+
+
+def get_default_output_device_id():
+    enumerator = create_device_enumerator()
+
+    default_device = enumerator.GetDefaultAudioEndpoint(
+        eRender,
+        ERole_Multimedia,
+    )
+
+    return get_device_id(default_device)
 
 
 def set_default_audio_device(device_id):
@@ -337,6 +359,7 @@ class AudioSwitcherApp:
 
         try:
             devices = get_output_devices()
+            default_device_id = get_default_output_device_id()
         except Exception as error:
             messagebox.showerror(
                 "Error",
@@ -350,11 +373,21 @@ class AudioSwitcherApp:
             return
 
         for device in devices:
+            is_default = device["id"].lower() == default_device_id.lower()
+
+            button_text = device["name"]
+
+            if is_default:
+                button_text = f"✓ {button_text}"
+
             button = tk.Button(
                 self.device_frame,
-                text=device["name"],
+                text=button_text,
                 height=2,
                 wraplength=520,
+                bg="#d0d0d0" if is_default else "#f0f0f0",
+                activebackground="#c4c4c4" if is_default else "#e5e5e5",
+                relief="sunken" if is_default else "raised",
                 command=lambda d=device: self.switch_device(d),
             )
             button.pack(fill="x", pady=5)
@@ -369,6 +402,10 @@ class AudioSwitcherApp:
             self.status_label.config(
                 text=f"Switched default output to: {device['name']}"
             )
+
+            # Refresh button list so the new default device is highlighted.
+            self.load_devices()
+
         except Exception as error:
             messagebox.showerror(
                 "Switch Failed",
